@@ -19,7 +19,7 @@ The image provide some especial features to have the VM running the more agnosti
 ## Build
 Put your xpenology img to the project folder,
 rename it to synoboot.img
-and execute docker build . -t segator/xpenology .
+and execute docker build -t segator/xpenology .
 
 ## Run
 Multiples environment variables can be modified to alter default runtime
@@ -38,7 +38,9 @@ Required if you want to passthru one physical hard drive
 - /image Directory where Virtual Disk's are saved (By default a virtual disk called disk.qcow2 is created to this directory)
 
 #### Ports:
-- a VNC service is listen on port 5900 (Protocol RFB 3.8)
+- Synology Web Interface 5000
+- SMB 137,139,445
+You can map whatever port you need.
 
 #### Featured Functions:
 The container have and extra defined functions to allow you manipulate the running VM
