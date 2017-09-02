@@ -1,0 +1,162 @@
+#!/bin/bash
+set -e
+# This entrypoint for KVM container configures and attaches network bridges to
+# the VM and starts KVM with the selected options.
+
+# See Dockerfile reference and README.md for further info.
+: ${DEBUG:='Y'}
+case "$DEBUG" in
+  [Yy1]* ) DEBUG=1;;
+  [Nn0]* ) DEBUG=0;;
+  *      ) log "ERROR" "DEBUG incorrect or undefined. It must be one of [Yy1Nn0]"; exit 1;;
+esac
+
+log () {
+  case "$1" in
+    INFO | WARNING | ERROR )
+      echo "$1: ${@:2}"
+      ;;
+    DEBUG)
+      if [ "$DEBUG" -eq "1" ]; then
+          echo "$1: ${@:2}"
+      fi
+      ;;
+    *)
+      echo "-- $@"
+      ;;
+  esac
+}
+
+if [[ ! -f /image/disk.qcow2 ]] && [[ ! $DISK_SIZE == 0* ]]; then
+   log "INFO" "No Initial Disk found, creating disk /image/disk.qcow2"
+    qemu-img create -f qcow2 /image/disk.qcow2 $DISK_SIZE
+fi
+
+: ${LAUNCHER:='qemu-system-x86_64'}
+: ${DNSMASQ_CONF_DIR:='/etc/dnsmasq.d'}
+: ${DNSMASQ:='/usr/sbin/dnsmasq'}
+: ${QEMU_CONF_DIR:='/etc/qemu-kvm'}
+: ${DISABLE_VGA:='Y'}
+: ${THREADS:='2'}
+: ${CORES:='2'}
+: ${MEMORY:='2048'}
+: ${HDD_CACHE:='none'}
+SMP=$(($CORES*$THREADS))
+KVM_SYNOBOOT="-device ich9-usb-ehci1,id=usb,multifunction=on -drive file=/synoboot.img,format=raw,if=none,id=drive-usb-disk2,cache=writeback -device usb-storage,bus=usb.0,port=2,drive=drive-usb-disk2,id=usb-disk2,bootindex=1,removable=off"
+if [[ ! $DISK_SIZE == 0* ]]; then
+    : ${KVM_BLK_OPTS:="-drive file=/image/disk.qcow2,format=qcow2,if=none,id=drive-sata0-0-1,cache=$HDD_CACHE -device ide-hd,bus=ide.1,drive=drive-sata0-0-1,id=sata0-0-1"}
+fi
+
+: ${KVM_OPTS:="\
+  -nodefaults \
+  -device virtio-balloon-pci,id=balloon0 \
+  -realtime mlock=off \
+  -msg timestamp=on \
+  -chardev pty,id=charserial0 \
+  -device isa-serial,chardev=charserial0,id=serial0 \
+  -serial stdio \
+  -monitor unix:/run/qemu-monitor.sock,server,nowait \
+  "}
+
+: ${KVM_CPU_OPTS:="-m $MEMORY -cpu host -smp $SMP,sockets=1,cores=$CORES,threads=$THREADS"}
+
+
+
+setupDhcp () {
+  IP="20.20.20.21"
+  CIDR="24"
+  MAC=$1
+  #HOSTNAME=$(hostname -s)
+  HOSTNAME="VirtualMachine"
+  # dnsmasq configuration:
+  log "INFO" "DHCP configured to serve IP $IP/$CIDR via dockerbridge"
+  DNSMASQ_OPTS="$DNSMASQ_OPTS --dhcp-range=$IP,$IP --dhcp-host=$MAC,,$IP,$HOSTNAME,infinite --dhcp-option=option:netmask,255.255.255.0"
+  # Create lease File FOr faster resolve
+  echo "0 $MAC $IP $HOSTNAME 01:${MAC}" > /var/lib/misc/dnsmasq.leases
+  chmod 644 /var/lib/misc/dnsmasq.leases
+
+}
+
+# Setup macvtap device to connect later the VM and setup a new macvlan devide
+# to connect the host machine to the network
+configureNetworks () {
+  #For now we define static MAC because DHCP is very slow if MAC change every VM Boot
+  VM_MAC="00:11:32:2A:A6:13"
+  #Create bridge with static IP for the VM Guest(COnnection VM-Docker)
+  brctl addbr dockerbridge
+  ip addr add 20.20.20.20/24 broadcast 20.20.20.255 dev dockerbridge
+  ip link set dockerbridge up
+  #QEMU Works with taps, set tap to the bridge created
+  ip tuntap add dev vm-nat mode tap
+  ip link set vm-nat up promisc on
+  brctl addif dockerbridge vm-nat
+
+  #Add internet connection to the VM
+  iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+  iptables -t nat -A PREROUTING -i eth0 -p tcp  -j DNAT --to $VM_IP
+  iptables -t nat -A PREROUTING -i eth0 -p udp  -j DNAT --to $VM_IP
+  #For now we define static MAC because DHCP is very slow if DHCP change every VM Boot
+  KVM_NET_OPTS="-netdev tap,ifname=vm-nat,script=no,downscript=no,id=net0  -device virtio-net,netdev=net0,mac=$VM_MAC"
+  #KVM_NET_OPTS="-netdev tap,vhost=on,id=net0,fd=3 3<>/dev/vm-nat  -device virtio-net,netdev=net0,mac=$VM_MAC"
+  setupDhcp $VM_MAC
+}
+
+# MAIN
+
+#enable KVM support onl if the host supports it
+if [[ $(grep -e vmx -e svm /proc/cpuinfo) ]]; then
+  log "INFO" "KVM acceleration enabled"
+  KVM_OPTS="$KVM_OPTS -enable-kvm -machine accel=kvm,usb=off "
+else
+  log "INFO" "KVM acceleration disabled"
+  exit -20
+fi
+
+
+case "$DISABLE_VGA" in
+  [Yy1]* ) DISABLE_VGA=1;;
+  [Nn0]* ) DISABLE_VGA=0;;
+  *      ) log "ERROR" "DISABLE_VGA incorrect or undefined. It must be one of [Yy1Nn0]"; exit 1;;
+esac
+
+
+
+if [[ "$DISABLE_VGA" -eq 0 ]]; then
+  : ${KVM_VIDEO_OPTS:="-vga qxl -vnc 0.0.0.0:0 -k en-us"}
+else
+  : ${KVM_VIDEO_OPTS:="-nographic"}
+fi
+
+DEFAULT_ROUTE=$(ip route | grep default | awk '{print $3}')
+
+configureNetworks
+
+# Hack for guest VMs complaining about "bad udp checksums in 5 packets"
+iptables -A POSTROUTING -t mangle -p udp --dport bootpc -j CHECKSUM --checksum-fill
+
+# Build DNS options from container /etc/resolv.conf
+nameservers=($(grep nameserver /etc/resolv.conf | sed 's/nameserver //'))
+searchdomains=$(grep search /etc/resolv.conf | sed 's/search //' | sed 's/ /,/g')
+domainname=$(echo $searchdomains | awk -F"," '{print $1}')
+
+for nameserver in "${nameservers[@]}"; do
+  [[ -z $DNS_SERVERS ]] && DNS_SERVERS=$nameserver || DNS_SERVERS="$DNS_SERVERS,$nameserver"
+done
+DNSMASQ_OPTS="$DNSMASQ_OPTS                         \
+  --dhcp-option=option:dns-server,$DNS_SERVERS      \
+  --dhcp-option=option:router,20.20.20.20           \
+  --dhcp-option=option:domain-search,$searchdomains \
+  --dhcp-option=option:domain-name,$domainname      \
+  "
+[[ -z $(hostname -d) ]] || DNSMASQ_OPTS="$DNSMASQ_OPTS --dhcp-option=option:domain-name,$(hostname -d)"
+
+log "INFO" "Lauching dnsmasq"
+log "DEBUG" "dnsmasq options: $DNSMASQ_OPTS"
+$DNSMASQ $DNSMASQ_OPTS
+
+log "INFO" "Launching qemu-kvm"
+COMMAND="$LAUNCHER $KVM_SYNOBOOT $KVM_BLK_OPTS $KVM_OPTS $KVM_VIDEO_OPTS $KVM_CPU_OPTS $@ $KVM_NET_OPTS"
+log "DEBUG" "${COMMAND}"
+trap '/usr/bin/VMPowerDown' SIGTERM
+trap '/usr/bin/VMPowerDown' SIGINT
+eval exec ${COMMAND}

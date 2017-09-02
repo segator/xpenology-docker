@@ -1,0 +1,3 @@
+#!/bin/bash
+echo loadvm $1 | nc -U /run/qemu-monitor.sock
+

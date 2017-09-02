@@ -1,0 +1,3 @@
+#!/bin/bash
+echo savevm $1 | nc -U /run/qemu-monitor.sock
+

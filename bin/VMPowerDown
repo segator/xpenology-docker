@@ -1,0 +1,17 @@
+#!/bin/bash
+processID=$(cat /run/qemu)
+echo "Shutting down VM..."
+
+#Gracefull stop via power button
+echo system_powerdown | nc -U /run/qemu-monitor.sock
+n=0
+#Wait for process die
+while [ -e /proc/$processID ]
+do
+    sleep 1
+done
+
+#Delete pid file
+rm /run/qemu
+#1 Second grace for Device unlocking
+sleep 1
