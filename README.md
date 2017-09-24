@@ -8,6 +8,7 @@ The image provide some especial features to have the VM running the more agnosti
 - VM DHCP: Runing VM will have DHCP and always will be provisioned with 20.20.20.21, will have internet connection and will be part of the docker networking
 - Port Forwarding From container to VM, you can access to the VM using the container IP
 - Live Snapshoting
+- 9P Mountpoints (Access docker volumes from Xpenology)
 
 
 ## run Requeriments
@@ -38,9 +39,7 @@ Required if you want to passthru one physical hard drive
 - /image Directory where Virtual Disk's are saved (By default a virtual disk called disk.qcow2 is created to this directory)
 
 #### Ports:
-- Synology Web Interface 5000
-- SMB 137,139,445
-You can map whatever port you need.
+- a VNC service is listen on port 5900 (Protocol RFB 3.8)
 
 #### Featured Functions:
 The container have and extra defined functions to allow you manipulate the running VM
@@ -50,6 +49,22 @@ The container have and extra defined functions to allow you manipulate the runni
 - deleteSnapshot <snapshotName>: Delete a Live snapshot
 - infoSnapshot: Show all the snapshots
 - restoreSnapshot <snapshotName>: stop the VM and restart using the choosed snapshot
+
+#### Mount Docker Host Volumes to Xpenology
+To mount Host Path/Docker Volumes to your Xpenology Image
+you need to load 9p drivers in your xpenology image,
+follow [this tutorial](https://xpenology.club/compile-drivers-xpenology-with-windows-10-and-build-in-bash) to compile drivers for your specific xpenology version.
+After have your image with 9p drivers loaded you need to create and script that will executed on every boot in your xpenology, this script will load
+the drivers and mount your 9p mountpoint, by default  this docker image map the path /data to the 9p "hostdata"
+Example
+```
+insmod /volume1/homes/admin/9pnet.ko
+insmod /volume1/homes/admin/9pnet_virtio.ko
+insmod /volume1/homes/admin/9p.ko
+mkdir /volume1/\@unraid
+mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144  hostdata /my/host/data
+
+```
 
 #### Example:
 `--privileged` parameter always mandatory

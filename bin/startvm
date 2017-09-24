@@ -60,7 +60,7 @@ fi
 
 : ${KVM_CPU_OPTS:="-m $MEMORY -cpu host -smp $SMP,sockets=1,cores=$CORES,threads=$THREADS"}
 
-
+: ${KVM_9P:="-fsdev local,security_model=passthrough,id=fsdev-fs0,path=/data -device virtio-9p-pci,id=fs0,fsdev=fsdev-fs0,mount_tag=hostdata,bus=pci.0"}
 
 setupDhcp () {
   IP="20.20.20.21"
@@ -81,7 +81,6 @@ setupDhcp () {
 # to connect the host machine to the network
 configureNetworks () {
   #For now we define static MAC because DHCP is very slow if MAC change every VM Boot
-  VM_MAC="00:11:32:2A:A6:13"
   #Create bridge with static IP for the VM Guest(COnnection VM-Docker)
   brctl addbr dockerbridge
   ip addr add 20.20.20.20/24 broadcast 20.20.20.255 dev dockerbridge
@@ -96,7 +95,7 @@ configureNetworks () {
   iptables -t nat -A PREROUTING -i eth0 -p tcp  -j DNAT --to $VM_IP
   iptables -t nat -A PREROUTING -i eth0 -p udp  -j DNAT --to $VM_IP
   #For now we define static MAC because DHCP is very slow if DHCP change every VM Boot
-  KVM_NET_OPTS="-netdev tap,ifname=vm-nat,script=no,downscript=no,id=net0  -device virtio-net,netdev=net0,mac=$VM_MAC"
+  KVM_NET_OPTS="-netdev tap,ifname=vm-nat,script=no,downscript=no,id=net0  -device virtio-net-pci,netdev=net0,mac=$VM_MAC"
   #KVM_NET_OPTS="-netdev tap,vhost=on,id=net0,fd=3 3<>/dev/vm-nat  -device virtio-net,netdev=net0,mac=$VM_MAC"
   setupDhcp $VM_MAC
 }
@@ -155,7 +154,7 @@ log "DEBUG" "dnsmasq options: $DNSMASQ_OPTS"
 $DNSMASQ $DNSMASQ_OPTS
 
 log "INFO" "Launching qemu-kvm"
-COMMAND="$LAUNCHER $KVM_SYNOBOOT $KVM_BLK_OPTS $KVM_OPTS $KVM_VIDEO_OPTS $KVM_CPU_OPTS $@ $KVM_NET_OPTS"
+COMMAND="$LAUNCHER $KVM_SYNOBOOT $KVM_BLK_OPTS $KVM_OPTS $KVM_VIDEO_OPTS $KVM_CPU_OPTS $@ $KVM_NET_OPTS $KVM_9P"
 log "DEBUG" "${COMMAND}"
 trap '/usr/bin/VMPowerDown' SIGTERM
 trap '/usr/bin/VMPowerDown' SIGINT
